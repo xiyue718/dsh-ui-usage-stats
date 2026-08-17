@@ -119,7 +119,7 @@ POST /@dsh-external/ui-usage-stats/api/filters
 
 ## 安装到其他 DSH 客户端
 
-与 `@dsh-external/ui-prompt-optimizer` 相同，支持三种方式。
+与 `@dsh-external/ui-prompt-optimizer` 相同，支持以下方式。
 
 ### 方式一：超级模组注入器（推荐，不修改项目文件）
 
@@ -133,18 +133,31 @@ POST /@dsh-external/ui-usage-stats/api/filters
 
 3. 打开或刷新 DSH Web，进入设置 → 用量统计。
 
-### 方式二：本地 bundle 装配
+### 方式二：使用 dsh 命令安装（项目官方方式）
 
-```text
-dev_install_package {
-  "dir": "C:/Users/<user>/.dsh/plugins/ui-usage-stats",
-  "profile": "web"
-}
+如果你已安装 `dsh` CLI，可以按项目官方教程使用 `dsh plugin` 命令安装：
+
+```bash
+# 从本地插件目录安装
+dsh plugin --profile web add C:/Users/<user>/.dsh/plugins/ui-usage-stats
+
+# 或从 GitHub 仓库安装
+dsh plugin --profile web add github:xiyue718/dsh-ui-usage-stats
 ```
 
-### 方式三：手动 bundle 配置
+安装后启动：
 
-将插件目录放入目标 DSH 可解析位置，在 profile 的 `package.json` 中声明依赖和 `bundles` 条目，然后重启 DSH Web。
+```bash
+dsh --profile web
+```
+
+查看组合配置：
+
+```bash
+dsh --profile web --dump-config
+```
+
+详细命令说明见项目文档：`docs/user/develop/basic/publish.md`。
 
 ## 使用步骤
 
