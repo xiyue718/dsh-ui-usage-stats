@@ -407,7 +407,47 @@ function UsageStatsSection() {
   )
 }
 
+function billedInputTokens(usage: any): number {
+  return (usage?.uncachedInputTokens ?? 0) + (usage?.cacheReadTokens ?? 0) + (usage?.cacheWriteTokens ?? 0)
+}
+
+function CachePercentCorrector(props: any) {
+  const usage = props.useProjection?.('tokenUsage')
+  const denominator = billedInputTokens(usage)
+  const percent = denominator === 0 ? null : (usage.cacheReadTokens / denominator * 100)
+  const formatted = percent === null ? null : percent.toFixed(2)
+
+  useEffect(() => {
+    if (formatted === null) return
+    const frame = requestAnimationFrame(() => {
+      const walker = document.createTreeWalker(document.body, NodeFilter.SHOW_TEXT)
+      let current: Node | null = walker.nextNode()
+      while (current !== null) {
+        if (current.nodeType === Node.TEXT_NODE) {
+          const text = current.textContent ?? ''
+          const match = /^(缓存命中|Cache hit)\s+(\d+)%$/.exec(text)
+          if (match !== null) {
+            current.textContent = `${match[1]} ${formatted}%`
+          }
+        }
+        current = walker.nextNode()
+      }
+    })
+    return () => { cancelAnimationFrame(frame) }
+  }, [formatted])
+
+  return null
+}
+
 export function apply(ctx: any): void {
+  ctx.slots.inject('conversation.composer.dock', () =>
+    ctx.slots.register({
+      name: 'conversation.composer.dock',
+      id: 'usage-stats-cache-percent-corrector',
+      order: 10,
+    }, CachePercentCorrector),
+  )
+
   ctx.slots.inject('settings.section', () =>
     ctx.slots.register({
       name: 'settings.section',
