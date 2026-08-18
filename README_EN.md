@@ -1,3 +1,5 @@
+[中文](./README.md) | [English](./README_EN.md)
+
 # @dsh-external/ui-usage-stats
 
 ## Introduction
