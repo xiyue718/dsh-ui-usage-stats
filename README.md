@@ -50,14 +50,16 @@ dsh --profile web --dump-config
 1. 启动 DSH Web 客户端。
 2. 打开“设置”面板。
 3. 点击左侧或导航中的“用量统计”。
-4. 等待统计加载完成，按工作区查看各会话、各时段、各模型的用量和费用。
-5. 使用页面顶部的“总计”查看所有工作区汇总。
-6. 在刷新行最右侧勾选或取消会话类型，页面只显示当前选中的类型。
-7. 点击“刷新”会重新检查所有会话的 revision，仅重算更新过的会话。
+4. 页面顶部会显示 DeepSeek 账户余额。
+5. 等待统计加载完成，按工作区查看各会话、各时段、各模型的用量和费用。
+6. 使用页面顶部的“总计”查看所有工作区汇总。
+7. 在刷新行最右侧勾选或取消会话类型，页面只显示当前选中的类型。
+8. 点击“刷新”会重新检查所有会话的 revision，仅重算更新过的会话，同时刷新余额。
 
 ## 功能
 
 - 设置页新增入口：设置 → 用量统计。
+- 页面顶部余额显示：通过 DeepSeek `GET /user/balance` 查询账户余额，展示币种、总余额、赠送余额和充值余额。
 - 展示字段：
   - 工作区路径
   - 会话 ID
@@ -91,12 +93,14 @@ dsh --profile web --dump-config
 
 ### 价格计算
 
-按照 DeepSeek 官方峰谷定价，高峰时段为北京时间 9:00-12:00、14:00-18:00，其余为空闲时段。
+按照 DeepSeek 官方峰谷定价，高峰时段为北京时间 9:00-12:00、14:00-18:00，其余为空闲时段。周六和周日全天执行谷价（空闲时段），不再设置峰价。
 
 | 模型 | 时段 | 百万 tokens 输入（缓存命中） | 百万 tokens 输入（缓存未命中） | 百万 tokens 输出 |
 |---|---|---|---|---|
 | deepseek-v4-flash | 空闲 | 0.05 元 | 1.5 元 | 4.5 元 |
 | deepseek-v4-flash | 高峰 | 0.10 元 | 3.0 元 | 9.0 元 |
+| deepseek-v4-flash-vision-exp | 空闲 | 0.05 元 | 1.5 元 | 4.5 元 |
+| deepseek-v4-flash-vision-exp | 高峰 | 0.10 元 | 3.0 元 | 9.0 元 |
 | deepseek-v4-pro | 空闲 | 0.15 元 | 4.5 元 | 13.5 元 |
 | deepseek-v4-pro | 高峰 | 0.30 元 | 9.0 元 | 27.0 元 |
 
@@ -121,12 +125,18 @@ GET  /@dsh-external/ui-usage-stats/api/filters
 POST /@dsh-external/ui-usage-stats/api/filters
 ```
 
+```http
+GET /@dsh-external/ui-usage-stats/api/balance
+```
+
 ## 原理
 
 插件由 host 和 client 两部分组成。
 
-Host 侧通过 `sessionPersistence.readRaw` 或 `sessionQuery.readSession` 读取会话日志，只关注 `assistant/message` 事件中的模型 `usage` 数据，按模型和高峰/空闲时段聚合未命中缓存、命中缓存、输出 tokens，再根据 DeepSeek 官方价格计算费用。分叉会话通过 `header.seedLength` 跳过继承自原会话的聊天记录，避免重复统计。
+Host 侧通过 `sessionPersistence.readRaw` 或 `sessionQuery.readSession` 读取会话日志，只关注 `assistant/message` 事件中的模型 `usage` 数据，按模型和高峰/空闲时段聚合未命中缓存、命中缓存、输出 tokens，再根据 DeepSeek 官方价格计算费用。高峰时段为北京时间 9:00-12:00、14:00-18:00；周六和周日全天按空闲时段计价。分叉会话通过 `header.seedLength` 跳过继承自原会话的聊天记录，避免重复统计。
+
+余额查询通过 DeepSeek `GET https://api.deepseek.com/user/balance` 实现，API Key 从项目凭证服务读取 `DEEPSEEK_API_KEY`，响应中的 `balance_infos` 会映射为页面顶部的余额展示。
 
 统计结果会以会话为单位缓存到 storage domain，缓存键为会话的持久化 revision；请求 `/api/stats` 时，只有 revision 变化的会话会重新读取日志并计算，未变化的会话直接复用缓存。多个会话使用并发数为 4 的 mapLimit 并行处理。最后按工作区路径分组，并按最近活动时间排序返回树形结果。
 
-Client 侧渲染“用量统计”页面，调用 `/api/stats` 获取数据，按工作区、会话、时段、模型逐层展示，并提供折叠、总计、会话类型筛选和刷新操作。聊天窗口中的百分比修正由插件侧组件读取 tokenUsage 投影计算后显示为两位小数。
+Client 侧渲染“用量统计”页面，调用 `/api/stats` 获取数据，按工作区、会话、时段、模型逐层展示，并提供折叠、总计、会话类型筛选和刷新操作；页面顶部调用 `/api/balance` 展示余额。聊天窗口中的百分比修正由插件侧组件读取 tokenUsage 投影计算后显示为两位小数。

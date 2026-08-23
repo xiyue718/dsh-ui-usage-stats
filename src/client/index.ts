@@ -10,6 +10,7 @@ export const inject = ['slots']
 const API_PREFIX = '/@dsh-external/ui-usage-stats/api'
 const API_PATH = `${API_PREFIX}/stats`
 const FILTERS_PATH = `${API_PREFIX}/filters`
+const BALANCE_PATH = `${API_PREFIX}/balance`
 
 type SessionType = 'normal' | 'subagent' | 'fork' | 'other'
 
@@ -71,12 +72,31 @@ interface StatsResponse {
   workspaces: WorkspaceStat[]
 }
 
+interface BalanceInfo {
+  currency: string
+  totalBalance: string | number
+  grantedBalance: string | number
+  toppedUpBalance: string | number
+}
+
+interface BalanceResponse {
+  ok: boolean
+  isAvailable?: boolean
+  balances?: BalanceInfo[]
+  error?: string
+}
+
 function fmtTokens(value: number): string {
   return Math.round(value).toLocaleString('zh-CN')
 }
 
 function fmtCost(value: number): string {
   return `¥${value.toFixed(4)}`
+}
+
+function fmtBalance(value: string | number): string {
+  const numeric = typeof value === 'string' ? Number(value) : value
+  return Number.isFinite(numeric) ? numeric.toFixed(2) : String(value)
 }
 
 function TotalsRow({ totals }: { totals: Totals }) {
@@ -145,6 +165,8 @@ function UsageStatsSection() {
   const [expandedWorkspaces, setExpandedWorkspaces] = useState<Set<string>>(new Set())
   const [expandedSessions, setExpandedSessions] = useState<Set<string>>(new Set())
   const [expandedPeriods, setExpandedPeriods] = useState<Set<string>>(new Set())
+  const [balance, setBalance] = useState<BalanceResponse | null>(null)
+  const [balanceLoading, setBalanceLoading] = useState(false)
 
   async function saveFilters(next: SessionTypeFilters) {
     try {
@@ -180,8 +202,22 @@ function UsageStatsSection() {
     }
   }
 
+  async function loadBalance() {
+    setBalanceLoading(true)
+    try {
+      const response = await fetch(BALANCE_PATH)
+      const json = await response.json()
+      setBalance(json)
+    } catch (err) {
+      setBalance({ ok: false, error: err instanceof Error ? err.message : String(err) })
+    } finally {
+      setBalanceLoading(false)
+    }
+  }
+
   useEffect(() => {
     void load()
+    void loadBalance()
     void fetch(FILTERS_PATH)
       .then(response => response.json())
       .then((json: any) => {
@@ -232,7 +268,7 @@ function UsageStatsSection() {
       'button',
       {
         type: 'button',
-        onClick: () => void load(),
+        onClick: () => { void load(); void loadBalance() },
         disabled: loading,
         style: {
           padding: '4px 10px',
@@ -247,14 +283,34 @@ function UsageStatsSection() {
     filterBar,
   )
 
+  const balanceCard = React.createElement(
+    'div',
+    { style: { border: '1px solid var(--dsw-alias-border-primary, #e5e5e5)', borderRadius: 8, padding: 12 } },
+    React.createElement('div', { style: { fontWeight: 700, fontSize: 14 } }, '余额'),
+    React.createElement('div', { style: { marginTop: 4, fontSize: 12, color: 'var(--dsw-alias-label-secondary, #666)' } },
+      balanceLoading && balance === null
+        ? '余额加载中…'
+        : balance === null
+          ? ''
+          : balance.ok === true
+            ? (balance.balances ?? []).map(info => React.createElement('div', { key: info.currency, style: { display: 'flex', gap: 16, flexWrap: 'wrap' } },
+                React.createElement('span', null, `币种：${info.currency}`),
+                React.createElement('span', null, `总余额：${fmtBalance(info.totalBalance)}`),
+                React.createElement('span', null, `赠送余额：${fmtBalance(info.grantedBalance)}`),
+                React.createElement('span', null, `充值余额：${fmtBalance(info.toppedUpBalance)}`),
+              ))
+            : React.createElement('span', { style: { color: 'var(--dsw-alias-state-error-primary, #d33)' } }, balance.error ?? '余额查询失败'),
+    ),
+  )
+
   if (loading && data === null) {
-    return React.createElement('div', { style: pageStyle }, header, React.createElement('div', null, '加载中…'))
+    return React.createElement('div', { style: pageStyle }, header, balanceCard, React.createElement('div', null, '加载中…'))
   }
   if (error !== '') {
-    return React.createElement('div', { style: pageStyle }, header, React.createElement('div', { style: { color: 'var(--dsw-alias-state-error-primary, #d33)' } }, error))
+    return React.createElement('div', { style: pageStyle }, header, balanceCard, React.createElement('div', { style: { color: 'var(--dsw-alias-state-error-primary, #d33)' } }, error))
   }
   if (data === null || data.workspaces.length === 0) {
-    return React.createElement('div', { style: pageStyle }, header, React.createElement('div', null, '暂无用量数据'))
+    return React.createElement('div', { style: pageStyle }, header, balanceCard, React.createElement('div', null, '暂无用量数据'))
   }
 
   const selectedTypes = new Set<SessionType>(
@@ -400,6 +456,7 @@ function UsageStatsSection() {
 
   return React.createElement('div', { style: pageStyle },
     header,
+    balanceCard,
     grandTotalsCard,
     visibleWorkspaces.length === 0
       ? React.createElement('div', null, '未选择任何会话类型或没有匹配的会话')

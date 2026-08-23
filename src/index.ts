@@ -12,12 +12,15 @@ import { defineDomain, domainTable } from '@deepseek-ai/dsh-storage-domain'
 import { z } from 'zod'
 
 export const name = '@dsh-external/ui-usage-stats'
-export const inject = ['webServer', 'sessionQuery', 'sessionPersistence', 'storageDomain']
+export const inject = ['webServer', 'sessionQuery', 'sessionPersistence', 'storageDomain', 'credentials']
 
 const API_PREFIX = '/@dsh-external/ui-usage-stats/api'
 const STATS_PATH = '/@dsh-external/ui-usage-stats/api/stats'
 const FILTERS_PATH = '/@dsh-external/ui-usage-stats/api/filters'
+const BALANCE_PATH = '/@dsh-external/ui-usage-stats/api/balance'
 const PARALLEL_SESSIONS = 4
+const DEEPSEEK_BALANCE_URL = 'https://api.deepseek.com/user/balance'
+const PRICING_VERSION = 2
 
 /** DeepSeek official pricing in CNY per 1M tokens. */
 const PRICES: Record<string, {
@@ -25,6 +28,10 @@ const PRICES: Record<string, {
   peak: { cacheHit: number; cacheMiss: number; output: number }
 }> = {
   'deepseek-v4-flash': {
+    offPeak: { cacheHit: 0.05, cacheMiss: 1.5, output: 4.5 },
+    peak: { cacheHit: 0.10, cacheMiss: 3.0, output: 9.0 },
+  },
+  'deepseek-v4-flash-vision-exp': {
     offPeak: { cacheHit: 0.05, cacheMiss: 1.5, output: 4.5 },
     peak: { cacheHit: 0.10, cacheMiss: 3.0, output: 9.0 },
   },
@@ -145,7 +152,11 @@ function addTotals(target: TokenTotals, source: TokenTotals): void {
 }
 
 function periodOf(time: number): PeriodId {
-  const hour = new Date(time + 8 * 3600 * 1000).getUTCHours()
+  const beijing = new Date(time + 8 * 3600 * 1000)
+  const day = beijing.getUTCDay()
+  // 周六（6）和周日（0）全天执行谷价，不再设置峰价。
+  if (day === 0 || day === 6) return 'off-peak'
+  const hour = beijing.getUTCHours()
   return (hour >= 9 && hour < 12) || (hour >= 14 && hour < 18) ? 'peak' : 'off-peak'
 }
 
@@ -179,6 +190,44 @@ function readBody(req: IncomingMessage): Promise<string> {
     req.on('end', () => resolve(data))
     req.on('error', reject)
   })
+}
+
+async function fetchBalance(ctx: Context): Promise<unknown> {
+  const credentials = (ctx as any).credentials
+  const resolved = await credentials?.resolve?.('DEEPSEEK_API_KEY')
+  const apiKey = typeof resolved?.value === 'string' ? resolved.value : ''
+  if (apiKey === '') {
+    return { ok: false, error: 'DEEPSEEK_API_KEY is not configured' }
+  }
+  const response = await fetch(DEEPSEEK_BALANCE_URL, {
+    headers: {
+      Authorization: `Bearer ${apiKey}`,
+      Accept: 'application/json',
+    },
+    signal: AbortSignal.timeout(10_000),
+  })
+  const data = await response.json() as {
+    is_available?: boolean
+    balance_infos?: Array<{
+      currency?: string
+      total_balance?: string | number
+      granted_balance?: string | number
+      topped_up_balance?: string | number
+    }>
+  }
+  if (!response.ok) {
+    return { ok: false, error: `DeepSeek balance API ${response.status}` }
+  }
+  return {
+    ok: true,
+    isAvailable: data.is_available ?? false,
+    balances: (data.balance_infos ?? []).map(info => ({
+      currency: info.currency ?? 'CNY',
+      totalBalance: info.total_balance ?? 0,
+      grantedBalance: info.granted_balance ?? 0,
+      toppedUpBalance: info.topped_up_balance ?? 0,
+    })),
+  }
 }
 
 function createAccumulator(): SessionAccumulator {
@@ -358,6 +407,17 @@ export async function apply(ctx: Context): Promise<void> {
     handler: async (req: IncomingMessage, res: ServerResponse) => {
       const pathname = new URL(req.url ?? '/', 'http://x').pathname
 
+      if (req.method === 'GET' && pathname === BALANCE_PATH) {
+        try {
+          const result = await fetchBalance(ctx)
+          sendJson(res, 200, result)
+        } catch (error) {
+          const message = error instanceof Error ? error.message : String(error)
+          sendJson(res, 200, { ok: false, error: message })
+        }
+        return
+      }
+
       if (req.method === 'GET' && pathname === FILTERS_PATH) {
         const saved = statsDomain?.table('ui_state').get('main')
         sendJson(res, 200, { filters: saved ?? DEFAULT_SESSION_TYPE_FILTERS })
@@ -411,7 +471,7 @@ export async function apply(ctx: Context): Promise<void> {
           PARALLEL_SESSIONS,
           async (record: any) => {
             const sessionId = String(record.header.id)
-            const fingerprint = revisionById.get(sessionId) ?? `live:${sessionId}:${record.header.createdAt ?? 0}`
+            const fingerprint = `${PRICING_VERSION}:${revisionById.get(sessionId) ?? `live:${sessionId}:${record.header.createdAt ?? 0}`}`
             const cached = cacheTable?.get?.(sessionId)
             if (cached !== undefined && cached.fingerprint === fingerprint && cached.stat.sessionType !== undefined) return cached.stat
 
